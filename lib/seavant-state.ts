@@ -23,6 +23,8 @@ export interface VoyageState {
   distanceRemainingNm: number;
   eta: string;
   etaWindowMinutes: number;
+  etaConfidence?: "LOW" | "MEDIUM" | "HIGH";
+  progressPercent?: number;
   averageSog: number;
   nextWaypoint?: {
     name: string;
