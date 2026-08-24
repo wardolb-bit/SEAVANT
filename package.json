@@ -1,6 +1,6 @@
 {
   "name": "seavant",
-  "version": "0.3.0",
+  "version": "0.6.1",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.112.4",
     "maplibre-gl": "^5.24.0",
     "next": "14.2.5",
     "react": "18.3.1",
