@@ -5,6 +5,7 @@ import { mockState } from "@/lib/mock-state";
 import { useLiveVessel } from "@/lib/use-live-vessel";
 import { useVoyageEngine } from "@/lib/use-voyage-engine";
 import { useAwarenessEngine } from "@/lib/use-awareness-engine";
+import { useWatchEngine } from "@/lib/use-watch-engine";
 
 function fmtPosition(value: number, lat: boolean) {
   const hemi = lat ? (value >= 0 ? "N" : "S") : value >= 0 ? "E" : "W";
@@ -15,12 +16,17 @@ function fmtEta(value: string) {
   const d = new Date(value);
   return `${String(d.getUTCDate()).padStart(2, "0")} ${d.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toUpperCase()} ${String(d.getUTCHours()).padStart(2, "0")}${String(d.getUTCMinutes()).padStart(2, "0")}Z`;
 }
+function fmtWatchStart(value: string) {
+  const d = new Date(value);
+  return `${String(d.getUTCHours()).padStart(2, "0")}${String(d.getUTCMinutes()).padStart(2, "0")}Z`;
+}
 
 export default function Home() {
   const live = useLiveVessel(mockState.vessel);
   const voyage = useVoyageEngine(live.vessel);
   const awareness = useAwarenessEngine(live.vessel, voyage);
-  const s = { ...mockState, vessel: live.vessel, voyage: { ...mockState.voyage, ...voyage }, awareness };
+  const watch = useWatchEngine(live.vessel, voyage, awareness);
+  const s = { ...mockState, vessel: live.vessel, voyage: { ...mockState.voyage, ...voyage }, awareness, watch };
   const livePosition = s.vessel.source === "live";
   const statusLabel = livePosition ? "LIVE AIS" : live.connection === "connected" ? "AIS CONNECTED · WAITING FOR OWN SHIP" : live.connection === "connecting" ? "CONNECTING TO AIS" : "SIMULATED FALLBACK";
 
@@ -31,9 +37,9 @@ export default function Home() {
       <article className="panel vessel"><div className="sectionTitle">NOW</div><div className="bigNav">{String(Math.round(s.vessel.cog)).padStart(3, "0")}°T</div><div className="speed">{s.vessel.sog.toFixed(1)} <small>kt</small></div><div className="position">{fmtPosition(s.vessel.position.lat, true)}<br />{fmtPosition(s.vessel.position.lon, false)}</div><div className="source">SOURCE · {s.vessel.source.toUpperCase()}{livePosition ? " · AIVDO" : ""}</div></article>
       <article className="panel next"><div className="sectionTitle">WHAT MATTERS NEXT</div><div className="attentionList">{s.awareness.map((item) => <div className={`attention ${item.level}`} key={item.id}><div className="horizon">{item.horizon.toUpperCase()}</div><div><strong>{item.title}</strong><p>{item.detail}</p></div></div>)}</div></article>
       <article className="panel picture"><div className="sectionTitle">OPERATIONAL PICTURE</div><OperationalMap vessel={s.vessel} /></article>
-      <article className="panel watch"><div className="sectionTitle">WATCH</div><div className="watchLead">{s.watch.courseSummary}</div><div className="watchStats"><Metric label="DMG" value={`${s.watch.distanceMadeGoodNm.toFixed(1)} NM`} /><Metric label="AVG SOG" value={`${s.watch.averageSog.toFixed(1)} kt`} /></div><ul>{s.watch.changes.map((change) => <li key={change}>{change}</li>)}</ul></article>
+      <article className="panel watch"><div className="sectionTitle">WATCH HANDOVER · SINCE {fmtWatchStart(s.watch.startedAt)}</div><div className="watchLead">{s.watch.courseSummary}</div><div className="watchStats"><Metric label="DMG" value={`${s.watch.distanceMadeGoodNm.toFixed(1)} NM`} /><Metric label="AVG SOG" value={`${s.watch.averageSog.toFixed(1)} kt`} /><Metric label="EVENTS" value={`${s.watch.events.length}`} /></div><ul>{s.watch.changes.map((change) => <li key={change}>{change}</li>)}</ul></article>
     </section>
-    <footer>SEAVANT ALPHA 0.5 · AWARENESS ENGINE</footer>
+    <footer>SEAVANT ALPHA 0.6 · WATCH / HANDOVER ENGINE</footer>
   </main>;
 }
 function Metric({ label, value }: { label: string; value: string }) { return <div className="metric"><span>{label}</span><strong>{value}</strong></div>; }
