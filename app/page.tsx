@@ -1,4 +1,7 @@
+"use client";
+
 import { mockState } from "@/lib/mock-state";
+import { useLiveVessel } from "@/lib/use-live-vessel";
 
 function fmtPosition(value: number, lat: boolean) {
   const hemi = lat ? (value >= 0 ? "N" : "S") : value >= 0 ? "E" : "W";
@@ -9,7 +12,17 @@ function fmtPosition(value: number, lat: boolean) {
 }
 
 export default function Home() {
-  const s = mockState;
+  const live = useLiveVessel(mockState.vessel);
+  const s = { ...mockState, vessel: live.vessel };
+  const livePosition = s.vessel.source === "live";
+  const statusLabel = livePosition
+    ? "LIVE AIS"
+    : live.connection === "connected"
+      ? "AIS CONNECTED · WAITING FOR OWN SHIP"
+      : live.connection === "connecting"
+        ? "CONNECTING TO AIS"
+        : "SIMULATED FALLBACK";
+
   return (
     <main className="shell">
       <header className="topbar">
@@ -17,7 +30,9 @@ export default function Home() {
           <div className="eyebrow">WARD MARITIME</div>
           <h1>SEAVANT</h1>
         </div>
-        <div className="status"><span className="statusDot" /> SIMULATED DATA</div>
+        <div className="status" title={live.lastError || live.wsUrl}>
+          <span className="statusDot" /> {statusLabel}
+        </div>
       </header>
 
       <section className="hero panel">
@@ -42,7 +57,10 @@ export default function Home() {
             {fmtPosition(s.vessel.position.lat, true)}<br />
             {fmtPosition(s.vessel.position.lon, false)}
           </div>
-          <div className="source">SOURCE · {s.vessel.source.toUpperCase()}</div>
+          <div className="source">
+            SOURCE · {s.vessel.source.toUpperCase()}
+            {livePosition ? " · AIVDO" : ""}
+          </div>
         </article>
 
         <article className="panel next">
@@ -84,7 +102,7 @@ export default function Home() {
         </article>
       </section>
 
-      <footer>SEAVANT ALPHA 0.1 · MARITIME OPERATIONS PLATFORM</footer>
+      <footer>SEAVANT ALPHA 0.2 · MARITIME OPERATIONS PLATFORM</footer>
     </main>
   );
 }
