@@ -1,5 +1,6 @@
 "use client";
 
+import OperationalMap from "@/app/components/OperationalMap";
 import { mockState } from "@/lib/mock-state";
 import { useLiveVessel } from "@/lib/use-live-vessel";
 
@@ -80,13 +81,7 @@ export default function Home() {
 
         <article className="panel picture">
           <div className="sectionTitle">OPERATIONAL PICTURE</div>
-          <div className="mapPlaceholder">
-            <div className="rangeRing ring1" />
-            <div className="rangeRing ring2" />
-            <div className="ship">▲</div>
-            <div className="trackLine" />
-            <div className="mapText">LIVE MAP INTEGRATION NEXT</div>
-          </div>
+          <OperationalMap vessel={s.vessel} />
         </article>
 
         <article className="panel watch">
@@ -102,7 +97,7 @@ export default function Home() {
         </article>
       </section>
 
-      <footer>SEAVANT ALPHA 0.2 · MARITIME OPERATIONS PLATFORM</footer>
+      <footer>SEAVANT ALPHA 0.3 · MARITIME OPERATIONS PLATFORM</footer>
     </main>
   );
 }
