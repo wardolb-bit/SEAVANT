@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { VesselState } from "./seavant-state";
 import { solveVoyage, type SpeedSample, type VoyagePlan } from "./voyage-engine";
 
-const DEMO_PLAN: VoyagePlan = {
+export const DEMO_PLAN: VoyagePlan = {
   departure: "Apra Harbor",
   destination: "Pearl Harbor",
   departurePosition: { lat: 13.44, lon: 144.65 },
@@ -17,9 +17,10 @@ const DEMO_PLAN: VoyagePlan = {
   ]
 };
 
-export function useVoyageEngine(vessel: VesselState) {
+export function useVoyageEngine(vessel: VesselState, savedPlan?: VoyagePlan | null) {
   const [samples, setSamples] = useState<SpeedSample[]>([]);
   const startedAt = useRef(Date.now());
+  const plan = savedPlan ?? DEMO_PLAN;
 
   useEffect(() => {
     if (vessel.source !== "live" || !Number.isFinite(vessel.sog)) return;
@@ -29,9 +30,7 @@ export function useVoyageEngine(vessel: VesselState) {
 
   return useMemo(() => {
     const now = Date.now();
-    const effectiveSamples = samples.length
-      ? samples
-      : [{ sog: vessel.sog || DEMO_PLAN.plannedSpeedKt, at: startedAt.current }];
-    return solveVoyage(DEMO_PLAN, vessel.position, effectiveSamples, now);
-  }, [samples, vessel.position.lat, vessel.position.lon, vessel.sog]);
+    const effectiveSamples = samples.length ? samples : [{ sog: vessel.sog || plan.plannedSpeedKt, at: startedAt.current }];
+    return { ...solveVoyage(plan, vessel.position, effectiveSamples, now), departure: plan.departure, destination: plan.destination };
+  }, [samples, vessel.position.lat, vessel.position.lon, vessel.sog, plan]);
 }
