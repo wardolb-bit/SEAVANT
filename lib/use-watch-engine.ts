@@ -6,11 +6,17 @@ import type { VoyageSolution } from "./voyage-engine";
 import { summarizeWatch, type WatchEvent } from "./watch-engine";
 import type { RestoredWatchState } from "./use-watch-restore";
 
+const COURSE_EVENT_THRESHOLD_DEG = 20;
+const SPEED_EVENT_THRESHOLD_KT = 1.5;
+const EVENT_COOLDOWN_MS = 10 * 60_000;
+
 export function useWatchEngine(vessel: VesselState, voyage: VoyageSolution, awareness: AwarenessItem[], restored?: RestoredWatchState | null) {
   const startedAt = useRef(restored ? new Date(restored.startedAt).getTime() : Date.now());
   const startPosition = useRef(restored?.startPosition ?? vessel.position);
   const previousCog = useRef(vessel.cog);
   const previousSog = useRef(vessel.sog);
+  const lastCourseEventAt = useRef(0);
+  const lastSpeedEventAt = useRef(0);
   const previousAwarenessIds = useRef<Set<string>>(new Set());
   const [events, setEvents] = useState<WatchEvent[]>(restored?.events ?? []);
   const [speedSamples, setSpeedSamples] = useState<number[]>(restored?.averageSog ? [restored.averageSog] : [vessel.sog]);
@@ -33,18 +39,22 @@ export function useWatchEngine(vessel: VesselState, voyage: VoyageSolution, awar
   }, [vessel.updatedAt, vessel.sog]);
 
   useEffect(() => {
-    const delta = Math.abs(vessel.cog - previousCog.current);
-    if (delta >= 10) {
+    const now = Date.now();
+    const delta = headingDelta(vessel.cog, previousCog.current);
+    if (delta >= COURSE_EVENT_THRESHOLD_DEG && now - lastCourseEventAt.current >= EVENT_COOLDOWN_MS) {
       pushEvent(setEvents, { id: `course-${vessel.updatedAt}`, at: new Date().toISOString(), type: "course", summary: `Course changed from ${Math.round(previousCog.current)}°T to ${Math.round(vessel.cog)}°T.` });
       previousCog.current = vessel.cog;
+      lastCourseEventAt.current = now;
     }
   }, [vessel.cog, vessel.updatedAt]);
 
   useEffect(() => {
+    const now = Date.now();
     const delta = vessel.sog - previousSog.current;
-    if (Math.abs(delta) >= 1) {
+    if (Math.abs(delta) >= SPEED_EVENT_THRESHOLD_KT && now - lastSpeedEventAt.current >= EVENT_COOLDOWN_MS) {
       pushEvent(setEvents, { id: `speed-${vessel.updatedAt}`, at: new Date().toISOString(), type: "speed", summary: `SOG ${delta < 0 ? "decreased" : "increased"} from ${previousSog.current.toFixed(1)} to ${vessel.sog.toFixed(1)} kt.` });
       previousSog.current = vessel.sog;
+      lastSpeedEventAt.current = now;
     }
   }, [vessel.sog, vessel.updatedAt]);
 
@@ -60,6 +70,11 @@ export function useWatchEngine(vessel: VesselState, voyage: VoyageSolution, awar
   }, [awareness]);
 
   return useMemo(() => summarizeWatch({ startedAt: startedAt.current, startPosition: startPosition.current, vessel, voyage, awareness, events, speedSamples }), [vessel, voyage, awareness, events, speedSamples]);
+}
+
+function headingDelta(a: number, b: number) {
+  const raw = Math.abs(a - b) % 360;
+  return raw > 180 ? 360 - raw : raw;
 }
 
 function pushEvent(setEvents: React.Dispatch<React.SetStateAction<WatchEvent[]>>, event: WatchEvent) {
