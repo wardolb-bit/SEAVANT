@@ -3,11 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { getSupabaseClient } from "./supabase-client";
 import type { WatchEvent } from "./watch-engine";
+import type { WatchStartSnapshot } from "./watch-intelligence";
 
 export interface RestoredWatchState {
   startedAt: string;
   startPosition: { lat: number; lon: number };
   averageSog?: number;
+  baseline?: WatchStartSnapshot;
   events: WatchEvent[];
 }
 
@@ -22,7 +24,7 @@ export function useWatchRestore(organizationId: string, vesselId: string) {
       setLoading(true);
       const { data: sessions, error } = await supabase
         .from("watch_sessions")
-        .select("id,started_at,start_lat,start_lon,average_sog_kt")
+        .select("id,started_at,start_lat,start_lon,average_sog_kt,start_snapshot")
         .eq("organization_id", organizationId)
         .eq("vessel_id", vesselId)
         .eq("status", "active")
@@ -50,6 +52,7 @@ export function useWatchRestore(organizationId: string, vesselId: string) {
         startedAt: session.started_at,
         startPosition: { lat: session.start_lat ?? 0, lon: session.start_lon ?? 0 },
         averageSog: session.average_sog_kt ?? undefined,
+        baseline: session.start_snapshot ?? undefined,
         events
       });
       setLoading(false);
