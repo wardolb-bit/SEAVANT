@@ -51,7 +51,8 @@ export function useWatchEngine(vessel: VesselState, voyage: VoyageSolution, awar
   useEffect(() => {
     const previous = previousAwarenessIds.current;
     for (const item of awareness) {
-      if (!previous.has(item.id) && item.id !== "quiet-now" && (item.level === "advisory" || item.level === "warning" || item.level === "action")) {
+      const shouldLog = item.id !== "quiet-now" && item.id !== "eta-shift" && (item.level === "advisory" || item.level === "warning" || item.level === "action");
+      if (!previous.has(item.id) && shouldLog) {
         pushEvent(setEvents, { id: `awareness-${item.id}-${Date.now()}`, at: new Date().toISOString(), type: "awareness", summary: item.title });
       }
     }
