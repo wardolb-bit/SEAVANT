@@ -49,7 +49,7 @@ export function buildWatchIntelligence(
   const etaDeltaMinutes = (Date.parse(voyage.eta) - Date.parse(baseline.eta)) / 60_000;
   const routeRemainingDeltaNm = voyage.distanceRemainingNm - baseline.routeRemainingNm;
   const xteDeltaNm = currentXte - baseline.xteNm;
-  const etaText = formatEtaDeltaDetailed(etaDeltaMinutes);
+  const etaText = formatEtaDelta(etaDeltaMinutes);
   const leg = voyage.diagnostics?.activeLeg;
   const legText = leg ? `${leg.from}–${leg.to}` : "active route";
   const nextText = voyage.nextWaypoint ? `${voyage.nextWaypoint.name} · ${voyage.nextWaypoint.distanceNm.toFixed(1)} NM` : "No active waypoint";
@@ -71,19 +71,12 @@ export function buildWatchIntelligence(
   };
 }
 
-// Used by the WATCH "ETA CHANGE" tile. Deliberately coarse so the tile
-// behaves like a watch-level trend indicator instead of a twitchy live gauge.
+// WATCH intelligence uses stable 15-minute trend bands so the display reads
+// like a watch-level operational summary rather than a live ETA instrument.
 export function formatEtaDelta(minutes: number) {
   if (!Number.isFinite(minutes) || Math.abs(minutes) < 15) return "essentially unchanged";
-  const rounded = Math.max(15, Math.round(Math.abs(minutes) / 15) * 15);
-  return minutes > 0 ? `slipped ${rounded} min` : `advanced ${rounded} min`;
-}
-
-// Used by the handover/intelligence narrative, which can remain more precise.
-function formatEtaDeltaDetailed(minutes: number) {
-  if (!Number.isFinite(minutes) || Math.abs(minutes) < 5) return "essentially unchanged";
-  const rounded = Math.round(Math.abs(minutes));
-  return minutes > 0 ? `slipped ${rounded} min` : `advanced ${rounded} min`;
+  const band = Math.floor(Math.abs(minutes) / 15) * 15;
+  return minutes > 0 ? `slipped ${band} min` : `advanced ${band} min`;
 }
 
 export function formatXte(value: number, side: WatchStartSnapshot["xteSide"]) {
