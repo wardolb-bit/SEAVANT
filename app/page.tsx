@@ -21,7 +21,7 @@ function OperationsHome({ user, vessel: selectedVessel, vessels, selectVessel, s
   const voyage = useVoyageEngine(vesselState);
   const awareness = useAwarenessEngine(vesselState, voyage);
   const watch = useWatchEngine(vesselState, voyage, awareness);
-  const persistence = usePersistentWatch(selectedVessel.id, vesselState, watch.events, watch);
+  const persistence = usePersistentWatch(selectedVessel.organization_id, selectedVessel.id, vesselState, watch.events, watch);
   const s = { ...mockState, vessel: vesselState, voyage: { ...mockState.voyage, ...voyage }, awareness, watch };
   const livePosition = s.vessel.source === "live";
   const statusLabel = livePosition ? "LIVE AIS" : live.connection === "connected" ? "AIS CONNECTED · WAITING FOR OWN SHIP" : live.connection === "connecting" ? "CONNECTING TO AIS" : "SIMULATED FALLBACK";
