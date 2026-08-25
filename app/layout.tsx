@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./globals.css";
+import "./voyage-builder.css";
 
 export const metadata: Metadata = {
   title: "SEAVANT",
