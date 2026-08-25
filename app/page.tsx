@@ -26,7 +26,7 @@ function SeavantApp({user,vessel:selectedVessel,vessels,selectVessel,signOut}:{u
  const [workspace,setWorkspace]=useState<Workspace>("operations");
  const live=useLiveVessel({...mockState.vessel,name:selectedVessel.name}); const vesselState={...live.vessel,name:selectedVessel.name};
  const storedVoyage=useVoyagePlan(selectedVessel.organization_id,selectedVessel.id); const activePlan=storedVoyage.plan?.status==="active"?storedVoyage.plan:null;
- const voyage=useVoyageEngine(vesselState,activePlan); const awareness=useAwarenessEngine(vesselState,voyage);
+ const voyage=useVoyageEngine(vesselState,activePlan,{organizationId:selectedVessel.organization_id,vesselId:selectedVessel.id}); const awareness=useAwarenessEngine(vesselState,voyage);
  const {restoredWatch,restoreLoading}=useWatchRestore(selectedVessel.organization_id,selectedVessel.id); const watch=useWatchEngine(vesselState,voyage,awareness,restoredWatch); const persistence=usePersistentWatch(selectedVessel.organization_id,selectedVessel.id,vesselState,watch.events,watch);
  const s={...mockState,vessel:vesselState,voyage:{...mockState.voyage,...voyage},awareness,watch}; const livePosition=s.vessel.source==="live";
  const statusLabel=livePosition?"LIVE AIS":live.connection==="connected"?"AIS CONNECTED · WAITING FOR OWN SHIP":live.connection==="connecting"?"CONNECTING TO AIS":"SIMULATED FALLBACK";
