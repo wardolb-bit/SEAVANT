@@ -17,7 +17,8 @@ export interface VoyageSolution { distanceRemainingNm: number; nextWaypoint?: { 
 const R_NM = 3440.065;
 function rad(value: number) { return value * Math.PI / 180; }
 function normalizeLonDelta(delta: number) { let d = delta; while (d > 180) d -= 360; while (d < -180) d += 360; return d; }
-function normalizeAngleRad(value: number) { let a = value; while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; }
+function clampLatRad(phi: number) { const limit = Math.PI / 2 - 1e-12; return Math.max(-limit, Math.min(limit, phi)); }
+function mercatorY(latDeg: number) { const phi = clampLatRad(rad(latDeg)); return Math.log(Math.tan(Math.PI / 4 + phi / 2)); }
 
 export function distanceNm(a: Position, b: Position) {
   const dLat = rad(b.lat - a.lat);
@@ -27,27 +28,40 @@ export function distanceNm(a: Position, b: Position) {
   return 2 * R_NM * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
-function initialBearingRad(a: Position, b: Position) {
-  const lat1 = rad(a.lat), lat2 = rad(b.lat);
-  const dLon = rad(normalizeLonDelta(b.lon - a.lon));
-  return Math.atan2(Math.sin(dLon) * Math.cos(lat2), Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon));
+export function rhumbDistanceNm(a: Position, b: Position) {
+  const phi1 = rad(a.lat), phi2 = rad(b.lat);
+  const dPhi = phi2 - phi1;
+  const dLambda = rad(normalizeLonDelta(b.lon - a.lon));
+  const dPsi = mercatorY(b.lat) - mercatorY(a.lat);
+  const q = Math.abs(dPsi) > 1e-12 ? dPhi / dPsi : Math.cos(phi1);
+  return Math.hypot(dPhi, q * dLambda) * R_NM;
 }
 
-function projectToGreatCircleLeg(start: Position, end: Position, point: Position) {
-  const legLengthNm = distanceNm(start, end);
-  if (legLengthNm < 0.000001) return { legLengthNm, alongTrackNm: 0, signedXteNm: distanceNm(start, point), segmentDistanceNm: distanceNm(start, point), t: 0 };
+function projectToRhumbLeg(start: Position, end: Position, point: Position) {
+  let endLon = end.lon;
+  while (endLon - start.lon > 180) endLon -= 360;
+  while (endLon - start.lon < -180) endLon += 360;
+  let pointLon = point.lon;
+  while (pointLon - start.lon > 180) pointLon -= 360;
+  while (pointLon - start.lon < -180) pointLon += 360;
 
-  const delta13 = distanceNm(start, point) / R_NM;
-  const theta13 = initialBearingRad(start, point);
-  const theta12 = initialBearingRad(start, end);
-  const dTheta = normalizeAngleRad(theta13 - theta12);
-  const deltaXt = Math.asin(Math.max(-1, Math.min(1, Math.sin(delta13) * Math.sin(dTheta))));
-  const signedXteNm = deltaXt * R_NM;
-  const deltaAt = Math.atan2(Math.sin(delta13) * Math.cos(dTheta), Math.cos(delta13));
-  const rawAlongTrackNm = deltaAt * R_NM;
-  const alongTrackNm = Math.max(0, Math.min(legLengthNm, rawAlongTrackNm));
-  const t = legLengthNm > 0 ? alongTrackNm / legLengthNm : 0;
-  const segmentDistanceNm = rawAlongTrackNm < 0 ? distanceNm(point, start) : rawAlongTrackNm > legLengthNm ? distanceNm(point, end) : Math.abs(signedXteNm);
+  const ax = rad(start.lon), ay = mercatorY(start.lat);
+  const bx = rad(endLon), by = mercatorY(end.lat);
+  const px = rad(pointLon), py = mercatorY(point.lat);
+  const vx = bx - ax, vy = by - ay;
+  const wx = px - ax, wy = py - ay;
+  const len2 = vx * vx + vy * vy;
+  const rawT = len2 > 0 ? (wx * vx + wy * vy) / len2 : 0;
+  const t = Math.max(0, Math.min(1, rawT));
+  const cx = ax + t * vx, cy = ay + t * vy;
+  const dx = px - cx, dy = py - cy;
+
+  const scale = Math.cos(rad(point.lat));
+  const segmentDistanceNm = Math.hypot(dx, dy) * R_NM * scale;
+  const signedCross = len2 > 0 ? (vx * wy - vy * wx) / Math.sqrt(len2) : 0;
+  const signedXteNm = signedCross * R_NM * scale;
+  const legLengthNm = rhumbDistanceNm(start, end);
+  const alongTrackNm = Math.max(0, Math.min(legLengthNm, legLengthNm * t));
   return { legLengthNm, alongTrackNm, signedXteNm, segmentDistanceNm, t };
 }
 
@@ -69,13 +83,11 @@ function nearestLeg(route: VoyageWaypoint[], position: Position) {
   if (route.length < 2) return { index: 0, distance: 0, t: 0, signedXte: 0, alongTrackNm: 0, legLengthNm: 0 };
   let best = { index: 0, distance: Infinity, t: 0, signedXte: 0, alongTrackNm: 0, legLengthNm: 0 };
   for (let i = 0; i < route.length - 1; i++) {
-    const projected = projectToGreatCircleLeg(route[i].position, route[i + 1].position, position);
-    if (projected.segmentDistanceNm < best.distance) {
-      best = { index: i, distance: projected.segmentDistanceNm, t: projected.t, signedXte: projected.signedXteNm, alongTrackNm: projected.alongTrackNm, legLengthNm: projected.legLengthNm };
-    }
+    const projected = projectToRhumbLeg(route[i].position, route[i + 1].position, position);
+    if (projected.segmentDistanceNm < best.distance) best = { index: i, distance: projected.segmentDistanceNm, t: projected.t, signedXte: projected.signedXteNm, alongTrackNm: projected.alongTrackNm, legLengthNm: projected.legLengthNm };
   }
   if (best.t > 0.985 && best.index < route.length - 2) {
-    const nextProjection = projectToGreatCircleLeg(route[best.index + 1].position, route[best.index + 2].position, position);
+    const nextProjection = projectToRhumbLeg(route[best.index + 1].position, route[best.index + 2].position, position);
     return { index: best.index + 1, distance: nextProjection.segmentDistanceNm, t: nextProjection.t, signedXte: nextProjection.signedXteNm, alongTrackNm: nextProjection.alongTrackNm, legLengthNm: nextProjection.legLengthNm };
   }
   return best;
@@ -92,14 +104,14 @@ export function solveVoyage(plan: VoyagePlan, position: Position, samples: Speed
   const legIndex = leg.index;
   const from = fullRoute[legIndex];
   const next = fullRoute[Math.min(legIndex + 1, fullRoute.length - 1)];
-  const legLength = leg.legLengthNm || distanceNm(from.position, next.position);
+  const legLength = leg.legLengthNm || rhumbDistanceNm(from.position, next.position);
   const alongTrack = Math.max(0, Math.min(legLength, leg.alongTrackNm));
   const legRemaining = Math.max(0, legLength - alongTrack);
 
   let downstream = 0;
-  for (let i = legIndex + 1; i < fullRoute.length - 1; i++) downstream += distanceNm(fullRoute[i].position, fullRoute[i + 1].position);
+  for (let i = legIndex + 1; i < fullRoute.length - 1; i++) downstream += rhumbDistanceNm(fullRoute[i].position, fullRoute[i + 1].position);
 
-  const nextDistance = distanceNm(position, next.position);
+  const nextDistance = rhumbDistanceNm(position, next.position);
   const remaining = nextDistance + downstream;
   const projectedRemaining = legRemaining + downstream;
 
@@ -113,11 +125,11 @@ export function solveVoyage(plan: VoyagePlan, position: Position, samples: Speed
   const confidence = sampleAgeMinutes >= 60 ? "HIGH" : sampleAgeMinutes >= 20 ? "MEDIUM" : "LOW";
   const window = confidence === "HIGH" ? Math.max(20, Math.round(hours * 1.5)) : confidence === "MEDIUM" ? Math.max(35, Math.round(hours * 2.5)) : Math.max(60, Math.round(hours * 4));
 
-  const total = fullRoute.slice(0, -1).reduce((sum, wp, i) => sum + distanceNm(wp.position, fullRoute[i + 1].position), 0);
+  const total = fullRoute.slice(0, -1).reduce((sum, wp, i) => sum + rhumbDistanceNm(wp.position, fullRoute[i + 1].position), 0);
   const progress = total > 0 ? Math.max(0, Math.min(100, (1 - remaining / total) * 100)) : 0;
   const nextHours = speed > 0.2 ? nextDistance / speed : 0;
   const xte = Math.abs(leg.signedXte);
-  const crossTrackSide: RouteDiagnostics["crossTrackSide"] = xte < 0.01 ? "ON TRACK" : leg.signedXte > 0 ? "STARBOARD" : "PORT";
+  const crossTrackSide: RouteDiagnostics["crossTrackSide"] = xte < 0.01 ? "ON TRACK" : leg.signedXte > 0 ? "PORT" : "STARBOARD";
 
   return {
     distanceRemainingNm: remaining,
