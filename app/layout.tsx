@@ -4,6 +4,7 @@ import "./globals.css";
 import "./voyage-builder.css";
 import "./active-leg.css";
 import "./watch-intelligence.css";
+import "./admin.css";
 
 export const metadata: Metadata = {
   title: "SEAVANT",
