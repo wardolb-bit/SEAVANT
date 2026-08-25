@@ -47,7 +47,7 @@ export default function AdminWorkspace({ organizationId, selectedVesselId, curre
         if (firstError) throw firstError;
 
         const members = (memberResult.data ?? []) as MemberRow[];
-        const ids = [...new Set(members.map((item) => item.user_id))];
+        const ids = Array.from(new Set(members.map((item) => item.user_id)));
         let profiles: ProfileRow[] = [];
         if (ids.length) {
           const profileResult = await supabase.from("profiles").select("id,full_name").in("id", ids);
