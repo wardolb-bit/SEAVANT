@@ -17,6 +17,7 @@ export interface VoyageSolution { distanceRemainingNm: number; nextWaypoint?: { 
 const R_NM = 3440.065;
 function rad(value: number) { return value * Math.PI / 180; }
 function normalizeLonDelta(delta: number) { let d = delta; while (d > 180) d -= 360; while (d < -180) d += 360; return d; }
+function normalizeAngleRad(value: number) { let a = value; while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; }
 
 export function distanceNm(a: Position, b: Position) {
   const dLat = rad(b.lat - a.lat);
@@ -24,6 +25,30 @@ export function distanceNm(a: Position, b: Position) {
   const lat1 = rad(a.lat), lat2 = rad(b.lat);
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
   return 2 * R_NM * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function initialBearingRad(a: Position, b: Position) {
+  const lat1 = rad(a.lat), lat2 = rad(b.lat);
+  const dLon = rad(normalizeLonDelta(b.lon - a.lon));
+  return Math.atan2(Math.sin(dLon) * Math.cos(lat2), Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon));
+}
+
+function projectToGreatCircleLeg(start: Position, end: Position, point: Position) {
+  const legLengthNm = distanceNm(start, end);
+  if (legLengthNm < 0.000001) return { legLengthNm, alongTrackNm: 0, signedXteNm: distanceNm(start, point), segmentDistanceNm: distanceNm(start, point), t: 0 };
+
+  const delta13 = distanceNm(start, point) / R_NM;
+  const theta13 = initialBearingRad(start, point);
+  const theta12 = initialBearingRad(start, end);
+  const dTheta = normalizeAngleRad(theta13 - theta12);
+  const deltaXt = Math.asin(Math.max(-1, Math.min(1, Math.sin(delta13) * Math.sin(dTheta))));
+  const signedXteNm = deltaXt * R_NM;
+  const deltaAt = Math.atan2(Math.sin(delta13) * Math.cos(dTheta), Math.cos(delta13));
+  const rawAlongTrackNm = deltaAt * R_NM;
+  const alongTrackNm = Math.max(0, Math.min(legLengthNm, rawAlongTrackNm));
+  const t = legLengthNm > 0 ? alongTrackNm / legLengthNm : 0;
+  const segmentDistanceNm = rawAlongTrackNm < 0 ? distanceNm(point, start) : rawAlongTrackNm > legLengthNm ? distanceNm(point, end) : Math.abs(signedXteNm);
+  return { legLengthNm, alongTrackNm, signedXteNm, segmentDistanceNm, t };
 }
 
 export function rollingAverageSpeed(samples: SpeedSample[], now = Date.now(), windowMinutes = 60) {
@@ -40,27 +65,19 @@ function phaseFor(distanceRemainingNm: number): VoyagePhase {
   return "ocean";
 }
 
-function localXY(origin: Position, p: Position) {
-  const avgLat = rad((origin.lat + p.lat) / 2);
-  return { x: normalizeLonDelta(p.lon - origin.lon) * 60 * Math.cos(avgLat), y: (p.lat - origin.lat) * 60 };
-}
-
 function nearestLeg(route: VoyageWaypoint[], position: Position) {
-  if (route.length < 2) return { index: 0, distance: 0, t: 0, signedXte: 0 };
-  let best = { index: 0, distance: Infinity, t: 0, signedXte: 0 };
+  if (route.length < 2) return { index: 0, distance: 0, t: 0, signedXte: 0, alongTrackNm: 0, legLengthNm: 0 };
+  let best = { index: 0, distance: Infinity, t: 0, signedXte: 0, alongTrackNm: 0, legLengthNm: 0 };
   for (let i = 0; i < route.length - 1; i++) {
-    const a = localXY(position, route[i].position);
-    const b = localXY(position, route[i + 1].position);
-    const vx = b.x - a.x, vy = b.y - a.y;
-    const len2 = vx * vx + vy * vy;
-    const len = Math.sqrt(len2);
-    const t = len2 > 0 ? Math.max(0, Math.min(1, -(a.x * vx + a.y * vy) / len2)) : 0;
-    const px = a.x + t * vx, py = a.y + t * vy;
-    const d = Math.hypot(px, py);
-    const signedXte = len > 0 ? (vx * (-a.y) - vy * (-a.x)) / len : 0;
-    if (d < best.distance) best = { index: i, distance: d, t, signedXte };
+    const projected = projectToGreatCircleLeg(route[i].position, route[i + 1].position, position);
+    if (projected.segmentDistanceNm < best.distance) {
+      best = { index: i, distance: projected.segmentDistanceNm, t: projected.t, signedXte: projected.signedXteNm, alongTrackNm: projected.alongTrackNm, legLengthNm: projected.legLengthNm };
+    }
   }
-  if (best.t > 0.985 && best.index < route.length - 2) return { ...best, index: best.index + 1, t: 0, signedXte: 0 };
+  if (best.t > 0.985 && best.index < route.length - 2) {
+    const nextProjection = projectToGreatCircleLeg(route[best.index + 1].position, route[best.index + 2].position, position);
+    return { index: best.index + 1, distance: nextProjection.segmentDistanceNm, t: nextProjection.t, signedXte: nextProjection.signedXteNm, alongTrackNm: nextProjection.alongTrackNm, legLengthNm: nextProjection.legLengthNm };
+  }
   return best;
 }
 
@@ -75,8 +92,8 @@ export function solveVoyage(plan: VoyagePlan, position: Position, samples: Speed
   const legIndex = leg.index;
   const from = fullRoute[legIndex];
   const next = fullRoute[Math.min(legIndex + 1, fullRoute.length - 1)];
-  const legLength = distanceNm(from.position, next.position);
-  const alongTrack = Math.max(0, Math.min(legLength, legLength * leg.t));
+  const legLength = leg.legLengthNm || distanceNm(from.position, next.position);
+  const alongTrack = Math.max(0, Math.min(legLength, leg.alongTrackNm));
   const legRemaining = Math.max(0, legLength - alongTrack);
 
   let downstream = 0;
@@ -100,7 +117,7 @@ export function solveVoyage(plan: VoyagePlan, position: Position, samples: Speed
   const progress = total > 0 ? Math.max(0, Math.min(100, (1 - remaining / total) * 100)) : 0;
   const nextHours = speed > 0.2 ? nextDistance / speed : 0;
   const xte = Math.abs(leg.signedXte);
-  const crossTrackSide: RouteDiagnostics["crossTrackSide"] = xte < 0.01 ? "ON TRACK" : leg.signedXte > 0 ? "PORT" : "STARBOARD";
+  const crossTrackSide: RouteDiagnostics["crossTrackSide"] = xte < 0.01 ? "ON TRACK" : leg.signedXte > 0 ? "STARBOARD" : "PORT";
 
   return {
     distanceRemainingNm: remaining,
