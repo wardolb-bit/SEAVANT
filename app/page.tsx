@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import IdentityGate, { type VesselIdentity } from "@/app/components/IdentityGate";
 import OperationalMap from "@/app/components/OperationalMap";
 import { mockState } from "@/lib/mock-state";
@@ -9,14 +10,47 @@ import { useAwarenessEngine } from "@/lib/use-awareness-engine";
 import { useWatchEngine } from "@/lib/use-watch-engine";
 import { usePersistentWatch } from "@/lib/use-persistent-watch";
 import { useWatchRestore } from "@/lib/use-watch-restore";
+import type { AwarenessItem } from "@/lib/seavant-state";
 
-function fmtPosition(value: number, lat: boolean) { const hemi = lat ? (value >= 0 ? "N" : "S") : value >= 0 ? "E" : "W"; const abs = Math.abs(value); const degrees = Math.floor(abs); const minutes = (abs - degrees) * 60; return `${degrees}° ${minutes.toFixed(1)}' ${hemi}`; }
-function fmtEta(value: string) { const d = new Date(value); return `${String(d.getUTCDate()).padStart(2, "0")} ${d.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toUpperCase()} ${String(d.getUTCHours()).padStart(2, "0")}${String(d.getUTCMinutes()).padStart(2, "0")}Z`; }
-function fmtWatchStart(value: string) { const d = new Date(value); return `${String(d.getUTCHours()).padStart(2, "0")}${String(d.getUTCMinutes()).padStart(2, "0")}Z`; }
+type Workspace = "operations" | "voyage" | "watch" | "weather" | "admin";
+const WORKSPACES: { id: Workspace; label: string }[] = [
+  { id: "operations", label: "OPERATIONS" },
+  { id: "voyage", label: "VOYAGE" },
+  { id: "watch", label: "WATCH" },
+  { id: "weather", label: "WEATHER" },
+  { id: "admin", label: "ADMIN" }
+];
 
-export default function Home() { return <IdentityGate>{(identity) => <OperationsHome {...identity} />}</IdentityGate>; }
+function fmtPosition(value: number, lat: boolean) {
+  const hemi = lat ? (value >= 0 ? "N" : "S") : value >= 0 ? "E" : "W";
+  const abs = Math.abs(value);
+  const degrees = Math.floor(abs);
+  const minutes = (abs - degrees) * 60;
+  return `${degrees}° ${minutes.toFixed(1)}' ${hemi}`;
+}
 
-function OperationsHome({ user, vessel: selectedVessel, vessels, selectVessel, signOut }: { user: { email?: string | null }; vessel: VesselIdentity; vessels: VesselIdentity[]; selectVessel: (id: string) => void; signOut: () => Promise<void>; }) {
+function fmtEta(value: string) {
+  const d = new Date(value);
+  return `${String(d.getUTCDate()).padStart(2, "0")} ${d.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toUpperCase()} ${String(d.getUTCHours()).padStart(2, "0")}${String(d.getUTCMinutes()).padStart(2, "0")}Z`;
+}
+
+function fmtWatchStart(value: string) {
+  const d = new Date(value);
+  return `${String(d.getUTCHours()).padStart(2, "0")}${String(d.getUTCMinutes()).padStart(2, "0")}Z`;
+}
+
+export default function Home() {
+  return <IdentityGate>{(identity) => <SeavantApp {...identity} />}</IdentityGate>;
+}
+
+function SeavantApp({ user, vessel: selectedVessel, vessels, selectVessel, signOut }: {
+  user: { email?: string | null };
+  vessel: VesselIdentity;
+  vessels: VesselIdentity[];
+  selectVessel: (id: string) => void;
+  signOut: () => Promise<void>;
+}) {
+  const [workspace, setWorkspace] = useState<Workspace>("operations");
   const live = useLiveVessel({ ...mockState.vessel, name: selectedVessel.name });
   const vesselState = { ...live.vessel, name: selectedVessel.name };
   const voyage = useVoyageEngine(vesselState);
@@ -31,15 +65,102 @@ function OperationsHome({ user, vessel: selectedVessel, vessels, selectVessel, s
   const displayStart = restoredWatch?.startedAt ?? persistence.startedAt;
 
   return <main className="shell">
-    <header className="topbar"><div><div className="eyebrow">WARD MARITIME</div><h1>SEAVANT</h1></div><div className="identityCluster">{vessels.length > 1 ? <select className="vesselSelect" value={selectedVessel.id} onChange={(e) => selectVessel(e.target.value)} aria-label="Active vessel">{vessels.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}</select> : <div className="activeVessel">{selectedVessel.name}</div>}<div className="status" title={live.lastError || live.wsUrl}><span className="statusDot" /> {statusLabel}</div><button className="accountButton" onClick={() => void signOut()} title={user.email ?? "Signed in"}>SIGN OUT</button></div></header>
-    <section className="hero panel"><div><div className="eyebrow">VOYAGE · {s.vessel.name.toUpperCase()}</div><div className="route">{s.voyage.departure} <span>→</span> {s.voyage.destination}</div><div className="phase">{s.voyage.phase.toUpperCase()} PASSAGE · {s.voyage.progressPercent?.toFixed(0)}% COMPLETE</div></div><div className="heroMetrics"><Metric label="REMAINING" value={`${Math.round(s.voyage.distanceRemainingNm).toLocaleString()} NM`} /><Metric label="AVG SOG" value={`${s.voyage.averageSog.toFixed(1)} kt`} /><Metric label="ETA" value={fmtEta(s.voyage.eta)} /><Metric label="CONFIDENCE" value={`${s.voyage.etaConfidence} · ±${s.voyage.etaWindowMinutes}m`} /></div></section>
-    <section className="grid">
-      <article className="panel vessel"><div className="sectionTitle">NOW</div><div className="bigNav">{String(Math.round(s.vessel.cog)).padStart(3, "0")}°T</div><div className="speed">{s.vessel.sog.toFixed(1)} <small>kt</small></div><div className="position">{fmtPosition(s.vessel.position.lat, true)}<br />{fmtPosition(s.vessel.position.lon, false)}</div><div className="source">SOURCE · {s.vessel.source.toUpperCase()}{livePosition ? " · AIVDO" : ""}</div></article>
-      <article className="panel next"><div className="sectionTitle">WHAT MATTERS NEXT</div><div className="attentionList">{s.awareness.map((item) => <div className={`attention ${item.level}`} key={item.id}><div className="horizon">{item.horizon.toUpperCase()}</div><div><strong>{item.title}</strong><p>{item.detail}</p></div></div>)}</div></article>
-      <article className="panel picture"><div className="sectionTitle">OPERATIONAL PICTURE</div><OperationalMap vessel={s.vessel} /></article>
-      <article className="panel watch"><div className="sectionTitle">WATCH {displayStart ? `· SINCE ${fmtWatchStart(displayStart)}` : "· STANDBY"} · {watchStatus}</div><div className="watchLead">{persistence.sessionId || restoredWatch ? s.watch.courseSummary : "No active watch. Start a watch when the watchstander assumes responsibility."}</div><div className="watchStats"><Metric label="DMG" value={`${s.watch.distanceMadeGoodNm.toFixed(1)} NM`} /><Metric label="AVG SOG" value={`${s.watch.averageSog.toFixed(1)} kt`} /><Metric label="EVENTS" value={`${s.watch.events.length}`} /></div><div className="watchActions">{!persistence.sessionId ? <button className="primaryAction compactAction" onClick={() => void persistence.startWatch()} disabled={persistence.syncState === "loading"}>START WATCH</button> : <><button className="secondaryAction compactAction" onClick={() => void persistence.handover()} disabled={persistence.syncState === "loading"}>HANDOVER</button><button className="dangerAction compactAction" onClick={() => void persistence.endWatch()} disabled={persistence.syncState === "loading"}>END WATCH</button></>}</div>{(persistence.sessionId || restoredWatch) && <ul>{s.watch.changes.map((change) => <li key={change}>{change}</li>)}</ul>}</article>
-    </section>
-    <footer>SEAVANT ALPHA 0.6.4 · MULTI-DEVICE WATCH RESTORE</footer>
+    <header className="topbar">
+      <div><div className="eyebrow">WARD MARITIME</div><h1>SEAVANT</h1></div>
+      <div className="identityCluster">
+        {vessels.length > 1 ? <select className="vesselSelect" value={selectedVessel.id} onChange={(e) => selectVessel(e.target.value)} aria-label="Active vessel">{vessels.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}</select> : <div className="activeVessel">{selectedVessel.name}</div>}
+        <div className="status" title={live.lastError || live.wsUrl}><span className="statusDot" /> {statusLabel}</div>
+        <button className="accountButton" onClick={() => void signOut()} title={user.email ?? "Signed in"}>SIGN OUT</button>
+      </div>
+    </header>
+
+    <nav className="workspaceNav" aria-label="SEAVANT workspaces">
+      {WORKSPACES.map((item) => <button key={item.id} className={workspace === item.id ? "workspaceTab active" : "workspaceTab"} onClick={() => setWorkspace(item.id)}>{item.label}</button>)}
+    </nav>
+
+    {workspace === "operations" && <OperationsWorkspace s={s} livePosition={livePosition} />}
+    {workspace === "watch" && <WatchWorkspace s={s} persistence={persistence} restoredWatch={restoredWatch} displayStart={displayStart} watchStatus={watchStatus} />}
+    {workspace === "voyage" && <WorkspaceShell eyebrow="VOYAGE" title="Voyage planning workspace" detail="Route creation, waypoint editing, passage progress, and route analysis will live here. The active voyage engine continues running underneath while this workspace is built out." />}
+    {workspace === "weather" && <WorkspaceShell eyebrow="WEATHER" title="Environmental workspace" detail="Forecasts, routing weather, warnings, and voyage-weather interactions will move here as the weather intelligence layer comes aboard." />}
+    {workspace === "admin" && <WorkspaceShell eyebrow="ADMIN" title="Fleet and vessel administration" detail="Organization settings, vessels, users, roles, integrations, and audit history will be managed here." />}
+
+    <footer>SEAVANT ALPHA 0.7 · OPERATIONS WORKSPACE</footer>
   </main>;
 }
-function Metric({ label, value }: { label: string; value: string }) { return <div className="metric"><span>{label}</span><strong>{value}</strong></div>; }
+
+function OperationsWorkspace({ s, livePosition }: { s: any; livePosition: boolean }) {
+  return <>
+    <section className="voyageBar panel">
+      <div>
+        <div className="eyebrow">ACTIVE VOYAGE · {s.vessel.name.toUpperCase()}</div>
+        <div className="route compactRoute">{s.voyage.departure} <span>→</span> {s.voyage.destination}</div>
+        <div className="phase">{s.voyage.phase.toUpperCase()} PASSAGE · {s.voyage.progressPercent?.toFixed(0)}% COMPLETE</div>
+      </div>
+      <div className="heroMetrics">
+        <Metric label="REMAINING" value={`${Math.round(s.voyage.distanceRemainingNm).toLocaleString()} NM`} />
+        <Metric label="AVG SOG" value={`${s.voyage.averageSog.toFixed(1)} kt`} />
+        <Metric label="ETA" value={fmtEta(s.voyage.eta)} />
+        <Metric label="CONFIDENCE" value={`${s.voyage.etaConfidence} · ±${s.voyage.etaWindowMinutes}m`} />
+      </div>
+    </section>
+
+    <section className="operationsGrid">
+      <article className="panel operationsMapPanel">
+        <div className="sectionTitle">OPERATIONAL PICTURE</div>
+        <OperationalMap vessel={s.vessel} />
+      </article>
+
+      <aside className="operationsRail">
+        <article className="panel nowCard">
+          <div className="sectionTitle">NOW</div>
+          <div className="nowPrimary"><div className="bigNav">{String(Math.round(s.vessel.cog)).padStart(3, "0")}°T</div><div className="speed">{s.vessel.sog.toFixed(1)} <small>kt</small></div></div>
+          <div className="position">{fmtPosition(s.vessel.position.lat, true)}<br />{fmtPosition(s.vessel.position.lon, false)}</div>
+          <div className="source">SOURCE · {s.vessel.source.toUpperCase()}{livePosition ? " · AIVDO" : ""}</div>
+        </article>
+
+        <VoyageAhead awareness={s.awareness} />
+      </aside>
+    </section>
+  </>;
+}
+
+function VoyageAhead({ awareness }: { awareness: AwarenessItem[] }) {
+  const meaningful = awareness.filter((item) => item.id !== "quiet-now").slice(0, 3);
+  return <article className="panel voyageAhead">
+    <div className="sectionTitle">VOYAGE AHEAD</div>
+    {meaningful.length ? <div className="aheadTimeline">
+      {meaningful.map((item, index) => <div className={`aheadItem ${item.level}`} key={item.id}>
+        <div className="aheadTrack"><span className="aheadDot" />{index < meaningful.length - 1 && <span className="aheadLine" />}</div>
+        <div className="aheadContent"><div className="aheadHorizon">{item.horizon.toUpperCase()}</div><strong>{item.title}</strong><p>{item.detail}</p></div>
+      </div>)}
+    </div> : <div className="aheadClear"><span>ALL CLEAR</span><strong>No significant voyage changes ahead.</strong><p>SEAVANT will surface the next operationally meaningful event here.</p></div>}
+  </article>;
+}
+
+function WatchWorkspace({ s, persistence, restoredWatch, displayStart, watchStatus }: { s: any; persistence: any; restoredWatch: any; displayStart: string | null; watchStatus: string }) {
+  const active = Boolean(persistence.sessionId || restoredWatch);
+  return <section className="watchWorkspace">
+    <article className="panel watchPrimary">
+      <div className="workspaceHeading">
+        <div><div className="eyebrow">ACTIVE WATCH</div><h2>{displayStart ? `Watch since ${fmtWatchStart(displayStart)}` : "Watch standby"}</h2></div>
+        <div className={`cloudBadge ${watchStatus === "SYNC ERROR" ? "error" : ""}`}>{watchStatus}</div>
+      </div>
+      <div className="watchLead">{active ? s.watch.courseSummary : "No active watch. Start a watch when the watchstander assumes responsibility."}</div>
+      <div className="watchStats large"><Metric label="DMG" value={`${s.watch.distanceMadeGoodNm.toFixed(1)} NM`} /><Metric label="AVG SOG" value={`${s.watch.averageSog.toFixed(1)} kt`} /><Metric label="EVENTS" value={`${s.watch.events.length}`} /></div>
+      <div className="watchActions">{!persistence.sessionId ? <button className="primaryAction compactAction" onClick={() => void persistence.startWatch()} disabled={persistence.syncState === "loading"}>START WATCH</button> : <><button className="secondaryAction compactAction" onClick={() => void persistence.handover()} disabled={persistence.syncState === "loading"}>HANDOVER</button><button className="dangerAction compactAction" onClick={() => void persistence.endWatch()} disabled={persistence.syncState === "loading"}>END WATCH</button></>}</div>
+    </article>
+
+    <div className="watchWorkspaceGrid">
+      <article className="panel eventPanel"><div className="sectionTitle">WATCH EVENTS</div>{active ? <div className="eventList">{s.watch.events.length ? [...s.watch.events].reverse().map((event: any) => <div className="eventRow" key={event.id}><time>{fmtWatchStart(event.at)}</time><div><strong>{event.summary}</strong><span>{event.type.toUpperCase()}</span></div></div>) : <div className="emptyState">No significant watch events recorded.</div>}</div> : <div className="emptyState">Start a watch to begin the operational event record.</div>}</article>
+      <article className="panel handoverPanel"><div className="sectionTitle">HANDOVER SUMMARY</div>{active ? <><div className="handoverCourse">{s.watch.courseSummary}</div><ul>{s.watch.changes.map((change: string) => <li key={change}>{change}</li>)}</ul></> : <div className="emptyState">No handover summary until a watch is active.</div>}<div className="historyHint"><span>WATCH HISTORY</span><p>Completed-watch history and exports will be added here next.</p></div></article>
+    </div>
+  </section>;
+}
+
+function WorkspaceShell({ eyebrow, title, detail }: { eyebrow: string; title: string; detail: string }) {
+  return <section className="panel workspaceShell"><div className="eyebrow">{eyebrow}</div><h2>{title}</h2><p>{detail}</p><div className="workspaceComingSoon">WORKSPACE FOUNDATION READY</div></section>;
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return <div className="metric"><span>{label}</span><strong>{value}</strong></div>;
+}
