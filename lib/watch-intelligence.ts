@@ -72,8 +72,8 @@ export function buildWatchIntelligence(
 }
 
 export function formatEtaDelta(minutes: number) {
-  if (!Number.isFinite(minutes) || Math.abs(minutes) < 5) return "essentially unchanged";
-  const rounded = Math.round(Math.abs(minutes));
+  if (!Number.isFinite(minutes) || Math.abs(minutes) < 15) return "essentially unchanged";
+  const rounded = Math.max(15, Math.round(Math.abs(minutes) / 15) * 15);
   return minutes > 0 ? `slipped ${rounded} min` : `advanced ${rounded} min`;
 }
 
