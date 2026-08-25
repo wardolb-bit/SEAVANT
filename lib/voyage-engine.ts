@@ -1,44 +1,18 @@
 import type { Position, VoyagePhase } from "./seavant-state";
 
-export interface VoyageWaypoint {
-  name: string;
-  position: Position;
-}
-
-export interface VoyagePlan {
-  departure: string;
-  destination: string;
-  departurePosition: Position;
-  destinationPosition: Position;
-  waypoints: VoyageWaypoint[];
-  plannedSpeedKt: number;
-}
-
-export interface SpeedSample {
-  sog: number;
-  at: number;
-}
-
-export interface VoyageSolution {
-  distanceRemainingNm: number;
-  nextWaypoint?: { name: string; distanceNm: number; eta: string };
-  averageSog: number;
-  eta: string;
-  etaWindowMinutes: number;
-  etaConfidence: "LOW" | "MEDIUM" | "HIGH";
-  progressPercent: number;
-  phase: VoyagePhase;
-}
+export interface VoyageWaypoint { name: string; position: Position; }
+export interface VoyagePlan { departure: string; destination: string; departurePosition: Position; destinationPosition: Position; waypoints: VoyageWaypoint[]; plannedSpeedKt: number; }
+export interface SpeedSample { sog: number; at: number; }
+export interface VoyageSolution { distanceRemainingNm: number; nextWaypoint?: { name: string; distanceNm: number; eta: string }; averageSog: number; eta: string; etaWindowMinutes: number; etaConfidence: "LOW" | "MEDIUM" | "HIGH"; progressPercent: number; phase: VoyagePhase; }
 
 const R_NM = 3440.065;
-
 function rad(value: number) { return value * Math.PI / 180; }
+function normalizeLonDelta(delta: number) { let d = delta; while (d > 180) d -= 360; while (d < -180) d += 360; return d; }
 
 export function distanceNm(a: Position, b: Position) {
   const dLat = rad(b.lat - a.lat);
-  const dLon = rad(b.lon - a.lon);
-  const lat1 = rad(a.lat);
-  const lat2 = rad(b.lat);
+  const dLon = rad(normalizeLonDelta(b.lon - a.lon));
+  const lat1 = rad(a.lat), lat2 = rad(b.lat);
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
   return 2 * R_NM * Math.asin(Math.min(1, Math.sqrt(h)));
 }
@@ -57,14 +31,38 @@ function phaseFor(distanceRemainingNm: number): VoyagePhase {
   return "ocean";
 }
 
-export function solveVoyage(plan: VoyagePlan, position: Position, samples: SpeedSample[], now = Date.now()): VoyageSolution {
-  const route = [...plan.waypoints, { name: plan.destination, position: plan.destinationPosition }];
-  let nextIndex = route.findIndex((wp) => distanceNm(position, wp.position) > 1);
-  if (nextIndex < 0) nextIndex = route.length - 1;
+function localXY(origin: Position, p: Position) {
+  const avgLat = rad((origin.lat + p.lat) / 2);
+  return { x: normalizeLonDelta(p.lon - origin.lon) * 60 * Math.cos(avgLat), y: (p.lat - origin.lat) * 60 };
+}
 
-  const next = route[nextIndex];
+function nearestLegIndex(route: VoyageWaypoint[], position: Position) {
+  if (route.length < 2) return 0;
+  let best = { index: 0, distance: Infinity, t: 0 };
+  for (let i = 0; i < route.length - 1; i++) {
+    const a = localXY(position, route[i].position);
+    const b = localXY(position, route[i + 1].position);
+    const vx = b.x - a.x, vy = b.y - a.y;
+    const len2 = vx * vx + vy * vy;
+    const t = len2 > 0 ? Math.max(0, Math.min(1, -(a.x * vx + a.y * vy) / len2)) : 0;
+    const px = a.x + t * vx, py = a.y + t * vy;
+    const d = Math.hypot(px, py);
+    if (d < best.distance) best = { index: i, distance: d, t };
+  }
+  return best.t > 0.985 ? Math.min(best.index + 1, route.length - 2) : best.index;
+}
+
+export function solveVoyage(plan: VoyagePlan, position: Position, samples: SpeedSample[], now = Date.now()): VoyageSolution {
+  const fullRoute: VoyageWaypoint[] = [
+    { name: plan.departure, position: plan.departurePosition },
+    ...plan.waypoints,
+    { name: plan.destination, position: plan.destinationPosition }
+  ];
+
+  const legIndex = nearestLegIndex(fullRoute, position);
+  const next = fullRoute[Math.min(legIndex + 1, fullRoute.length - 1)];
   let remaining = distanceNm(position, next.position);
-  for (let i = nextIndex; i < route.length - 1; i++) remaining += distanceNm(route[i].position, route[i + 1].position);
+  for (let i = legIndex + 1; i < fullRoute.length - 1; i++) remaining += distanceNm(fullRoute[i].position, fullRoute[i + 1].position);
 
   const avg60 = rollingAverageSpeed(samples, now, 60);
   const avg180 = rollingAverageSpeed(samples, now, 180);
@@ -76,18 +74,10 @@ export function solveVoyage(plan: VoyagePlan, position: Position, samples: Speed
   const confidence = sampleAgeMinutes >= 60 ? "HIGH" : sampleAgeMinutes >= 20 ? "MEDIUM" : "LOW";
   const window = confidence === "HIGH" ? Math.max(20, Math.round(hours * 1.5)) : confidence === "MEDIUM" ? Math.max(35, Math.round(hours * 2.5)) : Math.max(60, Math.round(hours * 4));
 
-  const total = distanceNm(plan.departurePosition, plan.destinationPosition);
+  const total = fullRoute.slice(0, -1).reduce((sum, wp, i) => sum + distanceNm(wp.position, fullRoute[i + 1].position), 0);
   const progress = total > 0 ? Math.max(0, Math.min(100, (1 - remaining / total) * 100)) : 0;
-  const nextHours = speed > 0.2 ? distanceNm(position, next.position) / speed : 0;
+  const nextDistance = distanceNm(position, next.position);
+  const nextHours = speed > 0.2 ? nextDistance / speed : 0;
 
-  return {
-    distanceRemainingNm: remaining,
-    nextWaypoint: { name: next.name, distanceNm: distanceNm(position, next.position), eta: new Date(now + nextHours * 3_600_000).toISOString() },
-    averageSog: speed,
-    eta: new Date(etaMs).toISOString(),
-    etaWindowMinutes: window,
-    etaConfidence: confidence,
-    progressPercent: progress,
-    phase: phaseFor(remaining)
-  };
+  return { distanceRemainingNm: remaining, nextWaypoint: { name: next.name, distanceNm: nextDistance, eta: new Date(now + nextHours * 3_600_000).toISOString() }, averageSog: speed, eta: new Date(etaMs).toISOString(), etaWindowMinutes: window, etaConfidence: confidence, progressPercent: progress, phase: phaseFor(remaining) };
 }
