@@ -15,10 +15,24 @@ export interface RouteDiagnostics {
 export interface VoyageSolution { distanceRemainingNm: number; nextWaypoint?: { name: string; distanceNm: number; eta: string }; averageSog: number; eta: string; etaWindowMinutes: number; etaConfidence: "LOW" | "MEDIUM" | "HIGH"; progressPercent: number; phase: VoyagePhase; diagnostics: RouteDiagnostics; }
 
 const R_NM = 3440.065;
+const WGS84_A_M = 6378137;
+const WGS84_F = 1 / 298.257223563;
+const WGS84_E2 = WGS84_F * (2 - WGS84_F);
+const WGS84_E = Math.sqrt(WGS84_E2);
+const METERS_PER_NM = 1852;
 function rad(value: number) { return value * Math.PI / 180; }
 function normalizeLonDelta(delta: number) { let d = delta; while (d > 180) d -= 360; while (d < -180) d += 360; return d; }
 function clampLatRad(phi: number) { const limit = Math.PI / 2 - 1e-12; return Math.max(-limit, Math.min(limit, phi)); }
 function mercatorY(latDeg: number) { const phi = clampLatRad(rad(latDeg)); return Math.log(Math.tan(Math.PI / 4 + phi / 2)); }
+function ellipsoidalMercatorY(latDeg: number) {
+  const phi = clampLatRad(rad(latDeg));
+  const sinPhi = Math.sin(phi);
+  return Math.log(Math.tan(Math.PI / 4 + phi / 2)) - (WGS84_E / 2) * Math.log((1 + WGS84_E * sinPhi) / (1 - WGS84_E * sinPhi));
+}
+function meridionalArcM(phi: number) {
+  const e2 = WGS84_E2, e4 = e2 * e2, e6 = e4 * e2;
+  return WGS84_A_M * ((1 - e2 / 4 - 3 * e4 / 64 - 5 * e6 / 256) * phi - (3 * e2 / 8 + 3 * e4 / 32 + 45 * e6 / 1024) * Math.sin(2 * phi) + (15 * e4 / 256 + 45 * e6 / 1024) * Math.sin(4 * phi) - (35 * e6 / 3072) * Math.sin(6 * phi));
+}
 
 export function distanceNm(a: Position, b: Position) {
   const dLat = rad(b.lat - a.lat);
@@ -30,11 +44,20 @@ export function distanceNm(a: Position, b: Position) {
 
 export function rhumbDistanceNm(a: Position, b: Position) {
   const phi1 = rad(a.lat), phi2 = rad(b.lat);
-  const dPhi = phi2 - phi1;
   const dLambda = rad(normalizeLonDelta(b.lon - a.lon));
-  const dPsi = mercatorY(b.lat) - mercatorY(a.lat);
-  const q = Math.abs(dPsi) > 1e-12 ? dPhi / dPsi : Math.cos(phi1);
-  return Math.hypot(dPhi, q * dLambda) * R_NM;
+  const dPsi = ellipsoidalMercatorY(b.lat) - ellipsoidalMercatorY(a.lat);
+  const course = Math.atan2(dLambda, dPsi);
+  const dM = meridionalArcM(phi2) - meridionalArcM(phi1);
+  let meters: number;
+  if (Math.abs(Math.cos(course)) > 1e-10 && Math.abs(phi2 - phi1) > 1e-12) {
+    meters = Math.abs(dM / Math.cos(course));
+  } else {
+    const phi = (phi1 + phi2) / 2;
+    const sinPhi = Math.sin(phi);
+    const primeVerticalRadius = WGS84_A_M / Math.sqrt(1 - WGS84_E2 * sinPhi * sinPhi);
+    meters = Math.abs(primeVerticalRadius * Math.cos(phi) * dLambda);
+  }
+  return meters / METERS_PER_NM;
 }
 
 function projectToRhumbLeg(start: Position, end: Position, point: Position) {
