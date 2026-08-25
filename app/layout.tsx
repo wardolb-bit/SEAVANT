@@ -3,6 +3,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import "./globals.css";
 import "./voyage-builder.css";
 import "./active-leg.css";
+import "./watch-intelligence.css";
 
 export const metadata: Metadata = {
   title: "SEAVANT",
