@@ -19,6 +19,7 @@ type AuditRow = { id: string; actor_id: string | null; action: string; summary: 
 type VesselDraft = { name: string; imo_number: string; call_sign: string };
 type InviteDraft = { fullName: string; email: string; role: AccessRole; vesselIds: string[] };
 type AccessDraft = { userId: string; role: AccessRole; vesselIds: string[] };
+type AccountDraft = { userId: string; password: string; confirmation: string; deleteConfirmation: string };
 
 type AdminData = {
   organization: Organization | null;
@@ -51,6 +52,7 @@ export default function AdminWorkspace({ organizationId, selectedVesselId, curre
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteDraft, setInviteDraft] = useState<InviteDraft>(EMPTY_INVITE);
   const [accessDraft, setAccessDraft] = useState<AccessDraft | null>(null);
+  const [accountDraft, setAccountDraft] = useState<AccountDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -126,6 +128,13 @@ export default function AdminWorkspace({ organizationId, selectedVesselId, curre
     const role = displayRole(member);
     if (role === "owner") return;
     setAccessDraft({ userId: member.user_id, role, vesselIds: memberAssignments(member.user_id).map((item) => item.vessel.id) });
+    setAccountDraft(null);
+    setMessage(null);
+  }
+
+  function beginAccountEdit(member: MemberRow) {
+    setAccountDraft({ userId: member.user_id, password: "", confirmation: "", deleteConfirmation: "" });
+    setAccessDraft(null);
     setMessage(null);
   }
 
@@ -235,6 +244,48 @@ export default function AdminWorkspace({ organizationId, selectedVesselId, curre
     }
   }
 
+  async function setTemporaryPassword() {
+    if (!accountDraft) return;
+    if (accountDraft.password.length < 8) { setMessage("Temporary passwords must contain at least 8 characters."); return; }
+    if (accountDraft.password !== accountDraft.confirmation) { setMessage("The temporary passwords do not match."); return; }
+    setSaving(true);
+    setMessage(null);
+    try {
+      const { data: result, error: functionError } = await supabase.functions.invoke("manage-seavant-user", {
+        body: { organizationId, targetUserId: accountDraft.userId, action: "set_temporary_password", temporaryPassword: accountDraft.password }
+      });
+      if (functionError) throw functionError;
+      if (result?.error) throw new Error(result.error);
+      setAccountDraft(null);
+      await loadAdminData();
+      setMessage(result?.message ?? "Temporary password saved.");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to set the temporary password.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteAccount() {
+    if (!accountDraft || accountDraft.deleteConfirmation !== "DELETE") return;
+    setSaving(true);
+    setMessage(null);
+    try {
+      const { data: result, error: functionError } = await supabase.functions.invoke("manage-seavant-user", {
+        body: { organizationId, targetUserId: accountDraft.userId, action: "delete_user" }
+      });
+      if (functionError) throw functionError;
+      if (result?.error) throw new Error(result.error);
+      setAccountDraft(null);
+      await loadAdminData();
+      setMessage(result?.message ?? "User account deleted.");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to delete the account.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   if (loading) return <section className="panel workspaceShell"><div className="eyebrow">ADMIN</div><h2>Loading fleet administration…</h2></section>;
 
   return <section className="adminWorkspace">
@@ -294,19 +345,34 @@ export default function AdminWorkspace({ organizationId, selectedVesselId, curre
             const assignments = memberAssignments(member.user_id);
             const role = displayRole(member);
             const editing = accessDraft?.userId === member.user_id;
+            const editingAccount = accountDraft?.userId === member.user_id;
+            const canManageAccount = member.role !== "owner" && member.user_id !== currentUserId && (currentRole === "owner" || member.role !== "admin");
             return <div className="adminMemberBlock" key={member.user_id}>
               <div className={`adminAccessRow ${member.active ? "" : "inactive"}`}>
                 <div className="adminAvatar">{profileName(member.user_id).slice(0, 2).toUpperCase()}</div>
                 <div className="adminAccessIdentity"><strong>{profileName(member.user_id)}</strong><span>{profileEmail(member.user_id)}</span></div>
                 <div className="adminRole"><span>{member.active ? "ACTIVE" : "INACTIVE"}</span><strong>{roleLabel(role)}</strong></div>
                 <div className="adminAssignments">{role === "owner" || role === "admin" ? <span>ALL VESSELS · {role.toUpperCase()}</span> : assignments.length ? assignments.map((item) => <span key={item.vessel.id}>{item.vessel.name} · {roleLabel(item.role!)}</span>) : <span>NO VESSEL ASSIGNMENT</span>}</div>
-                {canManage && member.role !== "owner" && member.user_id !== currentUserId && <div className="adminMemberActions"><button className="secondaryAction compactAction" onClick={() => editing ? setAccessDraft(null) : beginAccessEdit(member)}>{editing ? "CLOSE" : "EDIT ACCESS"}</button><button className={member.active ? "dangerAction compactAction" : "secondaryAction compactAction"} onClick={() => void setMemberActive(member, !member.active)} disabled={saving}>{member.active ? "DEACTIVATE" : "REACTIVATE"}</button></div>}
+                {canManageAccount && <div className="adminMemberActions"><button className="secondaryAction compactAction" onClick={() => editing ? setAccessDraft(null) : beginAccessEdit(member)}>{editing ? "CLOSE" : "EDIT ACCESS"}</button><button className="secondaryAction compactAction" onClick={() => editingAccount ? setAccountDraft(null) : beginAccountEdit(member)}>{editingAccount ? "CLOSE" : "ACCOUNT"}</button><button className={member.active ? "dangerAction compactAction" : "secondaryAction compactAction"} onClick={() => void setMemberActive(member, !member.active)} disabled={saving}>{member.active ? "DEACTIVATE" : "REACTIVATE"}</button></div>}
               </div>
               {editing && accessDraft && <div className="adminAccessEditor">
                 <div className="adminEditorFields singleField"><label>ROLE<select value={accessDraft.role} onChange={(event) => setAccessDraft((value) => value ? ({ ...value, role: event.target.value as AccessRole }) : value)}>{ROLE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></div>
                 {accessDraft.role !== "admin" && <VesselPicker vessels={data.vessels} selected={accessDraft.vesselIds} onToggle={(id) => setAccessDraft((value) => value ? ({ ...value, vesselIds: toggleVessel(value.vesselIds, id) }) : value)} />}
                 <div className="adminRoleDetail">{ROLE_OPTIONS.find((option) => option.value === accessDraft.role)?.detail}</div>
                 <div className="adminEditorActions"><button className="secondaryAction compactAction" onClick={() => setAccessDraft(null)} disabled={saving}>CANCEL</button><button className="primaryAction compactAction" onClick={() => void saveAccess()} disabled={saving}>{saving ? "SAVING…" : "SAVE ACCESS"}</button></div>
+              </div>}
+              {editingAccount && accountDraft && <div className="adminAccessEditor adminAccountEditor">
+                <div className="adminEditorHeading"><strong>ACCOUNT SECURITY</strong><span>Existing passwords cannot be viewed. Set a temporary replacement that the user must change at their next sign-in.</span></div>
+                <div className="adminEditorFields accountPasswordFields">
+                  <label>TEMPORARY PASSWORD<input type="password" value={accountDraft.password} onChange={(event) => setAccountDraft((value) => value ? ({ ...value, password: event.target.value }) : value)} autoComplete="new-password" minLength={8} /></label>
+                  <label>CONFIRM PASSWORD<input type="password" value={accountDraft.confirmation} onChange={(event) => setAccountDraft((value) => value ? ({ ...value, confirmation: event.target.value }) : value)} autoComplete="new-password" minLength={8} /></label>
+                </div>
+                <div className="adminEditorActions"><button className="primaryAction compactAction" onClick={() => void setTemporaryPassword()} disabled={saving}>{saving ? "SAVING…" : "SET TEMPORARY PASSWORD"}</button></div>
+                <div className="adminDeleteZone">
+                  <div><strong>PERMANENTLY DELETE ACCOUNT</strong><span>This removes the user, vessel assignments, and SEAVANT sign-in. Type DELETE to confirm.</span></div>
+                  <input value={accountDraft.deleteConfirmation} onChange={(event) => setAccountDraft((value) => value ? ({ ...value, deleteConfirmation: event.target.value.toUpperCase() }) : value)} placeholder="TYPE DELETE" />
+                  <button className="dangerAction compactAction" onClick={() => void deleteAccount()} disabled={saving || accountDraft.deleteConfirmation !== "DELETE"}>{saving ? "WORKING…" : "DELETE ACCOUNT"}</button>
+                </div>
               </div>}
             </div>;
           })}
