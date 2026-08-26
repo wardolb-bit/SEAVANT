@@ -8,6 +8,7 @@ const corsHeaders = {
 };
 
 const ACCESS_ROLES = new Set(["admin", "master", "officer", "engineer", "viewer"]);
+const SEAVANT_SITE_URL = "https://seavant.vercel.app";
 
 type InviteRequest = {
   organizationId?: string;
@@ -90,7 +91,8 @@ Deno.serve(async (req: Request) => {
     let invitedUser = await findUserByEmail(admin, email);
     if (!invitedUser) {
       const { data, error } = await admin.auth.admin.inviteUserByEmail(email, {
-        data: { full_name: fullName || undefined }
+        data: { full_name: fullName || undefined, must_set_password: true },
+        redirectTo: SEAVANT_SITE_URL
       });
       if (error) throw error;
       invitedUser = data.user;
