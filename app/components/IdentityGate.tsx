@@ -33,20 +33,23 @@ export default function IdentityGate({ children }: IdentityGateProps) {
   const [message, setMessage] = useState("");
 
   const loadVessels = useCallback(async (currentUser: User) => {
-    const { data, error } = await supabase
-      .from("vessels")
-      .select("id,name,organization_id")
-      .order("name");
+    const [vesselResult, membershipResult] = await Promise.all([
+      supabase.from("vessels").select("id,name,organization_id").order("name"),
+      supabase.from("organization_members").select("organization_id,active").eq("user_id", currentUser.id)
+    ]);
 
-    if (error) throw error;
-    const available = (data ?? []) as VesselIdentity[];
+    if (vesselResult.error) throw vesselResult.error;
+    if (membershipResult.error) throw membershipResult.error;
+    const available = (vesselResult.data ?? []) as VesselIdentity[];
     setVessels(available);
-    setNeedsOnboarding(available.length === 0);
+    setNeedsOnboarding(available.length === 0 && (membershipResult.data ?? []).length === 0);
 
     if (available.length) {
       const stored = window.localStorage.getItem(`seavant:vessel:${currentUser.id}`);
       const initial = available.some((v) => v.id === stored) ? stored! : available[0].id;
       setSelectedId(initial);
+    } else {
+      setSelectedId(null);
     }
   }, [supabase]);
 
