@@ -97,6 +97,9 @@ export default function IdentityGate({ children }: IdentityGateProps) {
 
   if (loading) return <GateFrame><div className="gateStatus">INITIALIZING SEAVANT IDENTITY…</div></GateFrame>;
   if (!user) return <AuthForm mode={mode} setMode={setMode} message={message} setMessage={setMessage} />;
+  if (user.invited_at && user.user_metadata?.must_set_password !== false) {
+    return <SetInvitedPassword user={user} onComplete={setUser} />;
+  }
   if (needsOnboarding) return <Onboarding user={user} onReady={() => loadVessels(user)} message={message} setMessage={setMessage} />;
 
   const vessel = vessels.find((item) => item.id === selectedId) ?? vessels[0];
@@ -157,6 +160,52 @@ function AuthForm({ mode, setMode, message, setMessage }: {
       <button className="textAction" type="button" onClick={() => { setMode(mode === "login" ? "signup" : "login"); setMessage(""); }}>
         {mode === "login" ? "CREATE A SEAVANT ACCOUNT" : "BACK TO SIGN IN"}
       </button>
+    </form>
+  </GateFrame>;
+}
+
+function SetInvitedPassword({ user, onComplete }: {
+  user: User;
+  onComplete: (user: User) => void;
+}) {
+  const supabase = useMemo(() => getSupabaseClient(), []);
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function savePassword(event: React.FormEvent) {
+    event.preventDefault();
+    setMessage("");
+    if (password !== confirmation) {
+      setMessage("The passwords do not match.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const { data, error } = await supabase.auth.updateUser({
+        password,
+        data: { ...user.user_metadata, must_set_password: false }
+      });
+      if (error) throw error;
+      onComplete(data.user);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to set your password.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <GateFrame>
+    <form className="authPanel panel" onSubmit={savePassword}>
+      <div className="eyebrow">INVITATION ACCEPTED</div>
+      <h1>SET YOUR PASSWORD</h1>
+      <div className="authSubtitle">Create the password you will use to sign in to SEAVANT.</div>
+      <label>NEW PASSWORD<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></label>
+      <label>CONFIRM PASSWORD<input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="new-password" minLength={8} required /></label>
+      {message && <div className="authMessage">{message}</div>}
+      <button className="primaryAction" type="submit" disabled={busy}>{busy ? "SAVING…" : "SET PASSWORD & CONTINUE"}</button>
     </form>
   </GateFrame>;
 }
