@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { getSupabaseClient } from "@/lib/supabase-client";
 
 interface Props {
@@ -9,12 +9,16 @@ interface Props {
   currentUserEmail?: string | null;
 }
 
+type AccessRole = "admin" | "master" | "officer" | "engineer" | "viewer";
 type Organization = { id: string; name: string };
 type VesselRow = { id: string; name: string; imo_number: string | null; call_sign: string | null };
-type MemberRow = { user_id: string; role: string };
+type MemberRow = { user_id: string; role: string; active: boolean; invited_at: string | null };
 type VesselMemberRow = { vessel_id: string; user_id: string; role: string };
-type ProfileRow = { id: string; full_name: string | null };
+type ProfileRow = { id: string; full_name: string | null; email: string | null };
+type AuditRow = { id: string; actor_id: string | null; action: string; summary: string; created_at: string };
 type VesselDraft = { name: string; imo_number: string; call_sign: string };
+type InviteDraft = { fullName: string; email: string; role: AccessRole; vesselIds: string[] };
+type AccessDraft = { userId: string; role: AccessRole; vesselIds: string[] };
 
 type AdminData = {
   organization: Organization | null;
@@ -22,10 +26,19 @@ type AdminData = {
   members: MemberRow[];
   vesselMembers: VesselMemberRow[];
   profiles: ProfileRow[];
+  auditLogs: AuditRow[];
 };
 
-const EMPTY: AdminData = { organization: null, vessels: [], members: [], vesselMembers: [], profiles: [] };
+const EMPTY: AdminData = { organization: null, vessels: [], members: [], vesselMembers: [], profiles: [], auditLogs: [] };
+const EMPTY_INVITE: InviteDraft = { fullName: "", email: "", role: "officer", vesselIds: [] };
 const MANAGER_ROLES = new Set(["owner", "admin"]);
+const ROLE_OPTIONS: { value: AccessRole; label: string; detail: string }[] = [
+  { value: "admin", label: "ADMIN", detail: "Fleet settings, users, vessels, voyages, and records" },
+  { value: "master", label: "MASTER", detail: "Assigned-vessel voyage planning and watch operations" },
+  { value: "officer", label: "BRIDGE", detail: "Assigned-vessel voyage planning and watch operations" },
+  { value: "engineer", label: "ENGINEERING", detail: "Assigned-vessel operational visibility" },
+  { value: "viewer", label: "VIEW ONLY", detail: "Read-only access to assigned vessels" }
+];
 
 export default function AdminWorkspace({ organizationId, selectedVesselId, currentUserEmail }: Props) {
   const supabase = useMemo(() => getSupabaseClient(), []);
@@ -35,10 +48,13 @@ export default function AdminWorkspace({ organizationId, selectedVesselId, curre
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<VesselDraft>({ name: "", imo_number: "", call_sign: "" });
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteDraft, setInviteDraft] = useState<InviteDraft>(EMPTY_INVITE);
+  const [accessDraft, setAccessDraft] = useState<AccessDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
-  async function loadAdminData() {
+  const loadAdminData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -46,20 +62,21 @@ export default function AdminWorkspace({ organizationId, selectedVesselId, curre
       if (userResult.error) throw userResult.error;
       setCurrentUserId(userResult.data.user?.id ?? null);
 
-      const [orgResult, vesselResult, memberResult, vesselMemberResult] = await Promise.all([
+      const [orgResult, vesselResult, memberResult, vesselMemberResult, auditResult] = await Promise.all([
         supabase.from("organizations").select("id,name").eq("id", organizationId).maybeSingle(),
         supabase.from("vessels").select("id,name,imo_number,call_sign").eq("organization_id", organizationId).order("name"),
-        supabase.from("organization_members").select("user_id,role").eq("organization_id", organizationId),
-        supabase.from("vessel_members").select("vessel_id,user_id,role")
+        supabase.from("organization_members").select("user_id,role,active,invited_at").eq("organization_id", organizationId),
+        supabase.from("vessel_members").select("vessel_id,user_id,role"),
+        supabase.from("audit_logs").select("id,actor_id,action,summary,created_at").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(10)
       ]);
-      const firstError = orgResult.error || vesselResult.error || memberResult.error || vesselMemberResult.error;
+      const firstError = orgResult.error || vesselResult.error || memberResult.error || vesselMemberResult.error || auditResult.error;
       if (firstError) throw firstError;
 
       const members = (memberResult.data ?? []) as MemberRow[];
       const ids = Array.from(new Set(members.map((item) => item.user_id)));
       let profiles: ProfileRow[] = [];
       if (ids.length) {
-        const profileResult = await supabase.from("profiles").select("id,full_name").in("id", ids);
+        const profileResult = await supabase.from("profiles").select("id,full_name,email").in("id", ids);
         if (profileResult.error) throw profileResult.error;
         profiles = (profileResult.data ?? []) as ProfileRow[];
       }
@@ -69,22 +86,35 @@ export default function AdminWorkspace({ organizationId, selectedVesselId, curre
         vessels: (vesselResult.data ?? []) as VesselRow[],
         members,
         vesselMembers: (vesselMemberResult.data ?? []) as VesselMemberRow[],
-        profiles
+        profiles,
+        auditLogs: (auditResult.data ?? []) as AuditRow[]
       });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to load administration data.");
     } finally {
       setLoading(false);
     }
-  }
+  }, [organizationId, supabase]);
 
-  useEffect(() => { void loadAdminData(); }, [organizationId]);
+  useEffect(() => { void loadAdminData(); }, [loadAdminData]);
 
   const currentRole = data.members.find((member) => member.user_id === currentUserId)?.role?.toLowerCase() ?? "member";
   const canManage = MANAGER_ROLES.has(currentRole);
-  const profileName = (userId: string) => data.profiles.find((p) => p.id === userId)?.full_name?.trim() || "SEAVANT USER";
-  const vesselMemberCount = (vesselId: string) => data.vesselMembers.filter((m) => m.vessel_id === vesselId).length;
-  const vesselRole = (vesselId: string, userId: string) => data.vesselMembers.find((m) => m.vessel_id === vesselId && m.user_id === userId)?.role;
+  const profile = (userId: string) => data.profiles.find((item) => item.id === userId);
+  const profileName = (userId: string) => profile(userId)?.full_name?.trim() || "SEAVANT USER";
+  const profileEmail = (userId: string) => profile(userId)?.email?.trim() || (userId === currentUserId ? currentUserEmail : null) || "ACCOUNT";
+  const vesselMemberCount = (vesselId: string) => data.vesselMembers.filter((assignment) => assignment.vessel_id === vesselId && data.members.some((member) => member.user_id === assignment.user_id && member.active)).length;
+  const vesselRole = (vesselId: string, userId: string) => data.vesselMembers.find((assignment) => assignment.vessel_id === vesselId && assignment.user_id === userId)?.role;
+  const memberAssignments = (userId: string) => data.vessels.map((vessel) => ({ vessel, role: vesselRole(vessel.id, userId) })).filter((item) => item.role);
+  const displayRole = (member: MemberRow): AccessRole | "owner" => {
+    if (member.role === "owner" || member.role === "admin") return member.role;
+    return (memberAssignments(member.user_id)[0]?.role as AccessRole | undefined) ?? "viewer";
+  };
+  const roleLabel = (role: string) => role === "officer" ? "BRIDGE" : role === "viewer" ? "VIEW ONLY" : role.toUpperCase();
+
+  function toggleVessel(ids: string[], vesselId: string) {
+    return ids.includes(vesselId) ? ids.filter((id) => id !== vesselId) : [...ids, vesselId];
+  }
 
   function beginEdit(vessel: VesselRow) {
     setEditingId(vessel.id);
@@ -92,8 +122,10 @@ export default function AdminWorkspace({ organizationId, selectedVesselId, curre
     setMessage(null);
   }
 
-  function cancelEdit() {
-    setEditingId(null);
+  function beginAccessEdit(member: MemberRow) {
+    const role = displayRole(member);
+    if (role === "owner") return;
+    setAccessDraft({ userId: member.user_id, role, vesselIds: memberAssignments(member.user_id).map((item) => item.vessel.id) });
     setMessage(null);
   }
 
@@ -103,16 +135,12 @@ export default function AdminWorkspace({ organizationId, selectedVesselId, curre
     setSaving(true);
     setMessage(null);
     try {
-      const { error: updateError } = await supabase
-        .from("vessels")
-        .update({
-          name,
-          imo_number: draft.imo_number.trim() || null,
-          call_sign: draft.call_sign.trim().toUpperCase() || null,
-          updated_at: new Date().toISOString()
-        })
-        .eq("id", vesselId)
-        .eq("organization_id", organizationId);
+      const { error: updateError } = await supabase.from("vessels").update({
+        name,
+        imo_number: draft.imo_number.trim() || null,
+        call_sign: draft.call_sign.trim().toUpperCase() || null,
+        updated_at: new Date().toISOString()
+      }).eq("id", vesselId).eq("organization_id", organizationId);
       if (updateError) throw updateError;
       setEditingId(null);
       await loadAdminData();
@@ -124,15 +152,94 @@ export default function AdminWorkspace({ organizationId, selectedVesselId, curre
     }
   }
 
+  async function inviteUser() {
+    if (!inviteDraft.email.trim()) { setMessage("Enter the user's email address."); return; }
+    if (inviteDraft.role !== "admin" && inviteDraft.vesselIds.length === 0) { setMessage("Assign at least one vessel."); return; }
+    setSaving(true);
+    setMessage(null);
+    try {
+      const { data: result, error: inviteError } = await supabase.functions.invoke("invite-seavant-user", {
+        body: {
+          organizationId,
+          email: inviteDraft.email,
+          fullName: inviteDraft.fullName,
+          accessRole: inviteDraft.role,
+          vesselIds: inviteDraft.vesselIds
+        }
+      });
+      if (inviteError) throw inviteError;
+      if (result?.error) throw new Error(result.error);
+      setInviteDraft(EMPTY_INVITE);
+      setInviteOpen(false);
+      await loadAdminData();
+      setMessage(result?.message ?? "User access created.");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to invite the user.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveAccess() {
+    if (!accessDraft) return;
+    if (accessDraft.role !== "admin" && accessDraft.vesselIds.length === 0) { setMessage("Assign at least one vessel."); return; }
+    setSaving(true);
+    setMessage(null);
+    try {
+      const organizationRole = accessDraft.role === "admin" ? "admin" : "viewer";
+      const { error: memberError } = await supabase.from("organization_members").update({
+        role: organizationRole,
+        active: true,
+        updated_at: new Date().toISOString()
+      }).eq("organization_id", organizationId).eq("user_id", accessDraft.userId);
+      if (memberError) throw memberError;
+
+      const vesselIds = data.vessels.map((vessel) => vessel.id);
+      if (vesselIds.length) {
+        const { error: clearError } = await supabase.from("vessel_members").delete().eq("user_id", accessDraft.userId).in("vessel_id", vesselIds);
+        if (clearError) throw clearError;
+      }
+      if (accessDraft.role !== "admin" && accessDraft.vesselIds.length) {
+        const { error: assignmentError } = await supabase.from("vessel_members").insert(
+          accessDraft.vesselIds.map((vesselId) => ({ vessel_id: vesselId, user_id: accessDraft.userId, role: accessDraft.role }))
+        );
+        if (assignmentError) throw assignmentError;
+      }
+
+      setAccessDraft(null);
+      await loadAdminData();
+      setMessage("User access updated.");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to update user access.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function setMemberActive(member: MemberRow, active: boolean) {
+    if (member.role === "owner" || member.user_id === currentUserId) return;
+    setSaving(true);
+    setMessage(null);
+    try {
+      const { error: updateError } = await supabase.from("organization_members").update({
+        active,
+        updated_at: new Date().toISOString()
+      }).eq("organization_id", organizationId).eq("user_id", member.user_id);
+      if (updateError) throw updateError;
+      await loadAdminData();
+      setMessage(active ? "User access reactivated." : "User access deactivated.");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to change user status.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   if (loading) return <section className="panel workspaceShell"><div className="eyebrow">ADMIN</div><h2>Loading fleet administration…</h2></section>;
 
   return <section className="adminWorkspace">
     <article className="panel adminHero">
-      <div>
-        <div className="eyebrow">FLEET ADMINISTRATION</div>
-        <h2>{data.organization?.name ?? "SEAVANT ORGANIZATION"}</h2>
-        <p>Organization, vessel, and access overview. Vessel particulars are now editable for organization managers.</p>
-      </div>
+      <div><div className="eyebrow">FLEET ADMINISTRATION</div><h2>{data.organization?.name ?? "SEAVANT ORGANIZATION"}</h2><p>Vessel particulars, maritime roles, vessel assignments, and permission history.</p></div>
       <div className="adminModeBadge">{canManage ? `${currentRole.toUpperCase()} · MANAGE` : "READ ONLY"}</div>
     </article>
 
@@ -141,9 +248,9 @@ export default function AdminWorkspace({ organizationId, selectedVesselId, curre
 
     <div className="adminSummaryGrid">
       <AdminMetric label="VESSELS" value={String(data.vessels.length)} />
-      <AdminMetric label="ORG USERS" value={String(data.members.length)} />
+      <AdminMetric label="ACTIVE USERS" value={String(data.members.filter((member) => member.active).length)} />
       <AdminMetric label="VESSEL ASSIGNMENTS" value={String(data.vesselMembers.length)} />
-      <AdminMetric label="ACTIVE VESSEL" value={data.vessels.find((v) => v.id === selectedVesselId)?.name ?? "--"} />
+      <AdminMetric label="ACTIVE VESSEL" value={data.vessels.find((vessel) => vessel.id === selectedVesselId)?.name ?? "--"} />
     </div>
 
     <div className="adminGrid">
@@ -154,10 +261,10 @@ export default function AdminWorkspace({ organizationId, selectedVesselId, curre
             const editing = editingId === vessel.id;
             return <div className={`adminRow adminVesselRow ${vessel.id === selectedVesselId ? "selected" : ""}`} key={vessel.id}>
               {editing ? <div className="adminEditForm">
-                <label>VESSEL NAME<input value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} /></label>
-                <label>IMO NUMBER<input value={draft.imo_number} inputMode="numeric" onChange={(e) => setDraft((d) => ({ ...d, imo_number: e.target.value.replace(/\D/g, "").slice(0, 7) }))} placeholder="7 digits" /></label>
-                <label>CALL SIGN<input value={draft.call_sign} onChange={(e) => setDraft((d) => ({ ...d, call_sign: e.target.value.toUpperCase() }))} /></label>
-                <div className="adminEditActions"><button className="secondaryAction compactAction" onClick={cancelEdit} disabled={saving}>CANCEL</button><button className="primaryAction compactAction" onClick={() => void saveVessel(vessel.id)} disabled={saving}>{saving ? "SAVING…" : "SAVE"}</button></div>
+                <label>VESSEL NAME<input value={draft.name} onChange={(event) => setDraft((value) => ({ ...value, name: event.target.value }))} /></label>
+                <label>IMO NUMBER<input value={draft.imo_number} inputMode="numeric" onChange={(event) => setDraft((value) => ({ ...value, imo_number: event.target.value.replace(/\D/g, "").slice(0, 7) }))} placeholder="7 digits" /></label>
+                <label>CALL SIGN<input value={draft.call_sign} onChange={(event) => setDraft((value) => ({ ...value, call_sign: event.target.value.toUpperCase() }))} /></label>
+                <div className="adminEditActions"><button className="secondaryAction compactAction" onClick={() => setEditingId(null)} disabled={saving}>CANCEL</button><button className="primaryAction compactAction" onClick={() => void saveVessel(vessel.id)} disabled={saving}>{saving ? "SAVING…" : "SAVE"}</button></div>
               </div> : <>
                 <div className="adminVesselIdentity"><strong>{vessel.name}</strong><span>{vessel.imo_number ? `IMO ${vessel.imo_number}` : "IMO NOT SET"} · {vessel.call_sign ? `CALL ${vessel.call_sign}` : "CALL SIGN NOT SET"}</span></div>
                 <div className="adminVesselActions"><div className="adminRowMeta"><strong>{vesselMemberCount(vessel.id)}</strong><span>USERS</span></div>{canManage && <button className="secondaryAction compactAction" onClick={() => beginEdit(vessel)}>EDIT</button>}</div>
@@ -169,15 +276,38 @@ export default function AdminWorkspace({ organizationId, selectedVesselId, curre
       </article>
 
       <article className="panel adminPanel">
-        <div className="adminPanelHeader"><div><div className="sectionTitle">PEOPLE & ACCESS</div><p>Organization roles and vessel assignments.</p></div><button className="secondaryAction compactAction" disabled>INVITE USER</button></div>
+        <div className="adminPanelHeader"><div><div className="sectionTitle">PEOPLE & ACCESS</div><p>Organization roles and vessel assignments.</p></div>{canManage && <button className="secondaryAction compactAction" onClick={() => setInviteOpen((open) => !open)}>{inviteOpen ? "CLOSE" : "INVITE USER"}</button>}</div>
+
+        {inviteOpen && <div className="adminAccessEditor adminInviteEditor">
+          <div className="adminEditorHeading"><strong>INVITE SEAVANT USER</strong><span>An invitation email will be sent to a new account.</span></div>
+          <div className="adminEditorFields">
+            <label>FULL NAME<input value={inviteDraft.fullName} onChange={(event) => setInviteDraft((value) => ({ ...value, fullName: event.target.value }))} /></label>
+            <label>EMAIL<input type="email" value={inviteDraft.email} onChange={(event) => setInviteDraft((value) => ({ ...value, email: event.target.value }))} /></label>
+            <label>ROLE<select value={inviteDraft.role} onChange={(event) => setInviteDraft((value) => ({ ...value, role: event.target.value as AccessRole }))}>{ROLE_OPTIONS.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label>
+          </div>
+          {inviteDraft.role !== "admin" && <VesselPicker vessels={data.vessels} selected={inviteDraft.vesselIds} onToggle={(id) => setInviteDraft((value) => ({ ...value, vesselIds: toggleVessel(value.vesselIds, id) }))} />}
+          <div className="adminEditorActions"><button className="secondaryAction compactAction" onClick={() => { setInviteOpen(false); setInviteDraft(EMPTY_INVITE); }} disabled={saving}>CANCEL</button><button className="primaryAction compactAction" onClick={() => void inviteUser()} disabled={saving}>{saving ? "SENDING…" : "SEND INVITATION"}</button></div>
+        </div>}
+
         <div className="adminList">
           {data.members.map((member) => {
-            const assignments = data.vessels.map((v) => ({ vessel: v, role: vesselRole(v.id, member.user_id) })).filter((item) => item.role);
-            return <div className="adminAccessRow" key={member.user_id}>
-              <div className="adminAvatar">{profileName(member.user_id).slice(0, 2).toUpperCase()}</div>
-              <div className="adminAccessIdentity"><strong>{profileName(member.user_id)}</strong><span>{member.user_id === currentUserId && currentUserEmail ? currentUserEmail : "ACCOUNT"}</span></div>
-              <div className="adminRole"><span>ORG</span><strong>{member.role.toUpperCase()}</strong></div>
-              <div className="adminAssignments">{assignments.length ? assignments.map((item) => <span key={item.vessel.id}>{item.vessel.name} · {item.role!.toUpperCase()}</span>) : <span>NO VESSEL ASSIGNMENT</span>}</div>
+            const assignments = memberAssignments(member.user_id);
+            const role = displayRole(member);
+            const editing = accessDraft?.userId === member.user_id;
+            return <div className="adminMemberBlock" key={member.user_id}>
+              <div className={`adminAccessRow ${member.active ? "" : "inactive"}`}>
+                <div className="adminAvatar">{profileName(member.user_id).slice(0, 2).toUpperCase()}</div>
+                <div className="adminAccessIdentity"><strong>{profileName(member.user_id)}</strong><span>{profileEmail(member.user_id)}</span></div>
+                <div className="adminRole"><span>{member.active ? "ACTIVE" : "INACTIVE"}</span><strong>{roleLabel(role)}</strong></div>
+                <div className="adminAssignments">{role === "owner" || role === "admin" ? <span>ALL VESSELS · {role.toUpperCase()}</span> : assignments.length ? assignments.map((item) => <span key={item.vessel.id}>{item.vessel.name} · {roleLabel(item.role!)}</span>) : <span>NO VESSEL ASSIGNMENT</span>}</div>
+                {canManage && member.role !== "owner" && member.user_id !== currentUserId && <div className="adminMemberActions"><button className="secondaryAction compactAction" onClick={() => editing ? setAccessDraft(null) : beginAccessEdit(member)}>{editing ? "CLOSE" : "EDIT ACCESS"}</button><button className={member.active ? "dangerAction compactAction" : "secondaryAction compactAction"} onClick={() => void setMemberActive(member, !member.active)} disabled={saving}>{member.active ? "DEACTIVATE" : "REACTIVATE"}</button></div>}
+              </div>
+              {editing && accessDraft && <div className="adminAccessEditor">
+                <div className="adminEditorFields singleField"><label>ROLE<select value={accessDraft.role} onChange={(event) => setAccessDraft((value) => value ? ({ ...value, role: event.target.value as AccessRole }) : value)}>{ROLE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></div>
+                {accessDraft.role !== "admin" && <VesselPicker vessels={data.vessels} selected={accessDraft.vesselIds} onToggle={(id) => setAccessDraft((value) => value ? ({ ...value, vesselIds: toggleVessel(value.vesselIds, id) }) : value)} />}
+                <div className="adminRoleDetail">{ROLE_OPTIONS.find((option) => option.value === accessDraft.role)?.detail}</div>
+                <div className="adminEditorActions"><button className="secondaryAction compactAction" onClick={() => setAccessDraft(null)} disabled={saving}>CANCEL</button><button className="primaryAction compactAction" onClick={() => void saveAccess()} disabled={saving}>{saving ? "SAVING…" : "SAVE ACCESS"}</button></div>
+              </div>}
             </div>;
           })}
           {!data.members.length && <div className="emptyState">No organization users found.</div>}
@@ -185,11 +315,20 @@ export default function AdminWorkspace({ organizationId, selectedVesselId, curre
       </article>
     </div>
 
+    {canManage && <article className="panel adminPanel adminAuditPanel">
+      <div className="adminPanelHeader"><div><div className="sectionTitle">PERMISSION HISTORY</div><p>Most recent vessel, role, assignment, and account changes.</p></div></div>
+      {data.auditLogs.length ? <div className="adminAuditList">{data.auditLogs.map((entry) => <div className="adminAuditRow" key={entry.id}><time>{new Date(entry.created_at).toLocaleString()}</time><strong>{entry.summary}</strong><span>{entry.actor_id ? profileName(entry.actor_id) : "SEAVANT IDENTITY SERVICE"}</span></div>)}</div> : <div className="emptyState">No administration changes recorded yet.</div>}
+    </article>}
+
     <article className="panel adminRoadmap">
       <div className="sectionTitle">ADMIN ROADMAP</div>
-      <div className="adminRoadmapGrid"><div><strong>01</strong><span>Vessel particulars editing · ACTIVE</span></div><div><strong>02</strong><span>Invite users and assign roles</span></div><div><strong>03</strong><span>Manage integrations and AIS endpoints</span></div><div><strong>04</strong><span>Audit trail and permission history</span></div></div>
+      <div className="adminRoadmapGrid"><div><strong>01</strong><span>Vessel particulars · COMPLETE</span></div><div><strong>02</strong><span>Users, roles, and assignments · ACTIVE</span></div><div><strong>03</strong><span>Integrations and AIS endpoints · NEXT</span></div><div><strong>04</strong><span>Permission history · ACTIVE</span></div></div>
     </article>
   </section>;
+}
+
+function VesselPicker({ vessels, selected, onToggle }: { vessels: VesselRow[]; selected: string[]; onToggle: (id: string) => void }) {
+  return <div className="adminVesselPicker"><span>VESSEL ACCESS</span><div>{vessels.map((vessel) => <label key={vessel.id}><input type="checkbox" checked={selected.includes(vessel.id)} onChange={() => onToggle(vessel.id)} />{vessel.name}</label>)}</div></div>;
 }
 
 function AdminMetric({ label, value }: { label: string; value: string }) {
